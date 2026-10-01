@@ -33,7 +33,7 @@ EVENT_WRITER_GUIDE_MAX_CHARS = 500
 EVENT_BODY_ACCEPT_MAX_CHARS = 1500
 
 TRACK_EVENT_POLICIES = {'default', 'rolling_engineering'}
-EVENT_CURATOR_ACTIONS = {'create', 'extend', 'merge'}
+EVENT_CURATOR_ACTIONS = {'create', 'extend', 'rewrite', 'merge'}
 EVENT_CURATOR_BLOCKING_BASE_FLAGS = ('protected', 'manual', 'forked', 'blocked', 'scene_ref', 'narrative_ref')
 EVENT_ACTIVITY_ROLES = {'origin', 'primary_activity', 'landing', 'origin_bridge', 'landing_bridge', 'bridge'}
 EVENT_BRIDGE_ROLES = {'origin_bridge', 'landing_bridge', 'bridge'}
@@ -207,7 +207,8 @@ def build_event_track_curator_prompt(date_view: str, component: dict[str, Any], 
             'dispositions 每项格式：'+json.dumps({'disposition':'skip','unit_roots':[5],'reason':'处置依据','parked_source_message_ids':[]},ensure_ascii=False)+'；disposition 只能为 skip 或 defer；defer 必须引用真实 parked source ID；没有 skip/defer 时返回 []。\n'
             f'{json.dumps(format_hint, ensure_ascii=False)}\n\n'
             '只选择 scope=stable 的完整 unit。每个 stable unit 必须恰好进入 Event、skip 或 defer；只有 Router 声明的 bridge 可共享。'
-            'parked/context_only 只可阅读。extend/merge 只填写 base_event_ids，host 取原文并集。'
+            'parked/context_only 只可阅读。extend/rewrite/merge 只填写 base_event_ids，host 保留原文并集。'
+            '普通接续用 extend，Writer 仅写新增段落；只有必须整篇重新组织时才显式用 rewrite（一条 base），合并多条 base 用 merge。'
             'parked 直接纠正紧邻 stable 结果时 defer；无关 parked 不影响已落定材料。'
             'rolling_engineering 逐条核对实际建设，相关 base 全选；受保护前版仍拟议 extend/merge，由 host 按冻结配置检查能否原文后追加，否则暂缓。\n'
             '整个 corridor 缺少对象、起因或被纠正旧主张时可一次返回 context_request；它与 Event 决定严格二选一，'
@@ -488,7 +489,7 @@ def _normalize_expanded_event_curator_output(output: dict[str, Any], component: 
             if not base_event_id or base_event_id in base_event_ids:
                 raise ValueError('Track Curator Event repeated or omitted a base_event_id')
             base_event_ids.append(base_event_id)
-        required_base_count = {'create': 0, 'extend': 1}.get(action)
+        required_base_count = {'create': 0, 'extend': 1, 'rewrite': 1}.get(action)
         if required_base_count is not None and len(base_event_ids) != required_base_count or (action == 'merge' and len(base_event_ids) < 2):
             raise ValueError('Track Curator Event action/base cardinality is invalid')
         selected_candidates: list[dict[str, Any]] = []
@@ -549,6 +550,17 @@ def _normalize_expanded_event_curator_output(output: dict[str, Any], component: 
             raise ValueError('Track Curator old+new source union omitted a base source')
         if not any((item['activity_role'] == 'primary_activity' for item in bindings)):
             raise ValueError('every Event must have an owned primary_activity')
+        if selected_candidates and not (binding_ids & (stable_ids-selected_source_ids)):
+            touched=[item['source_message_id'] for item in bindings if item['source_message_id'] in stable_ids]
+            held=normalize_disposition(touched,'defer')
+            defer=normalize_disposition(list(dict.fromkeys([*defer,*held])),'defer')
+            hard_skips.append({'event_ref':event_ref,'reason':'no_new_sources',
+                'requested_base_event_ids':base_event_ids,'active_base_event_ids':normalized_base_ids,
+                'blocking_flags':[],'defer_source_message_ids':held})
+            continue
+        # A normal extension preserves the existing prose just like an allowed
+        # protected continuation. Rewrite/merge remain explicit full-body work.
+        append_only = append_only or action == 'extend'
         for binding in bindings:
             source_id = binding['source_message_id']
             owners_by_source.setdefault(source_id, []).append({'event_ref': event_ref, 'primary_track_id': primary_track_id, 'binding': binding, 'inherited_bridge': source_id in inherited_sources})
@@ -678,18 +690,29 @@ def materialized_track_cards_payload(track_cards: list[dict[str, Any]] | None) -
         cards.append(card)
     return cards
 
-def build_event_writer_prompt(day: str, title: str, messages: list[dict[str, Any]], importance: int | None=None, track_context_events: list[dict[str, Any]] | None=None, context_messages: list[dict[str, Any]] | None=None, track_cards: list[dict[str, Any]] | None=None, source_activity_roles: dict[int, str] | None=None, previous_events: list[dict[str, Any]] | None=None, source_materials: list[dict[str, Any]] | None=None, include_role_rules: bool=True) -> str:
+def build_event_writer_prompt(day: str, title: str, messages: list[dict[str, Any]], importance: int | None=None, track_context_events: list[dict[str, Any]] | None=None, context_messages: list[dict[str, Any]] | None=None, track_cards: list[dict[str, Any]] | None=None, source_activity_roles: dict[int, str] | None=None, previous_events: list[dict[str, Any]] | None=None, source_materials: list[dict[str, Any]] | None=None, include_role_rules: bool=True, append_only: bool=False, context_read: bool=False) -> str:
     _ = importance
+    if append_only:
+        old=[*(track_context_events or []),*(previous_events or [])]
+        inherited={int(key) for event in old for key in event.get('source_message_ids') or []}
+        messages=[m for m in messages if int(m['id']) not in inherited]
+        context=[];chars=0;owned={int(m['id']) for m in messages}
+        for m in context_messages or []:
+            size=len(m.get('content',''))
+            if context_read and int(m['id']) not in inherited|owned and len(context)<6 and chars+size<=6000:
+                context.append(m);chars+=size
+        context_messages=context
+        previous_events=[]
+        track_context_events=old
+        if source_materials is not None:
+            owned={int(m['id']) for m in messages}
+            source_materials=[m for m in source_materials if m['source_message_id'] in owned]
     title_hint = f'事件提示：{title}' if str(title or '').strip() else '没有预设标题；请只根据绑定原文拟标题。'
     previous = []
-    owned_ids = {int(item['id']) for item in messages}
     for item in previous_events or []:
-        source_ids = [int(value) for value in item.get('source_message_ids') or []]
-        if not source_ids or not set(source_ids).issubset(owned_ids):
-            raise ValueError('Previous Event originals must belong to the frozen ownership')
         if not str(item.get('body') or '').strip():
             raise ValueError('Previous Event body is required for merge/extend writing')
-        previous.append({key: item.get(key) for key in ('event_id', 'title', 'body', 'local_date', 'local_end_date', 'source_message_ids')})
+        previous.append({key: item.get(key) for key in ('event_id', 'title', 'body', 'local_date', 'local_end_date')})
     previous_ids = {item['event_id'] for item in previous}
     context_events = [{'event_id': str(item.get('event_id') or ''), 'title': str(item.get('title') or ''), 'body': str(item.get('body') or '')} for item in track_context_events or [] if isinstance(item, dict) and str(item.get('body') or '').strip() and (str(item.get('event_id') or '') not in previous_ids)][-1:]
     reading_block = event_reading_block_payload(messages, context_messages, source_activity_roles=source_activity_roles)

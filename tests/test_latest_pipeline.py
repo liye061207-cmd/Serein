@@ -211,7 +211,7 @@ def test_latest_rolling_policy_does_not_force_unrelated_leaves_and_defers_blocke
     assert normalized['hard_skips'][0]['blocking_flags']==['protected']
 
 
-def test_three_stages_and_writer_sees_exact_predecessor_originals(settings):
+def test_three_stages_and_writer_sees_predecessor_body_without_old_originals(settings):
     ingest(settings);seen=[]
     async def runner(role,request):seen.append(role);return output_for(role,request)
     assert asyncio.run(p.advance(settings.database,include_recent=True,runner=runner))['events']==1
@@ -228,8 +228,11 @@ def test_three_stages_and_writer_sees_exact_predecessor_originals(settings):
     ingest(settings,2)
     task=curator_task(settings);p.submit(settings.database,task['job_id'],output_for(task['role'],task['request']))
     task=asyncio.run(p.advance(settings.database,include_recent=True));prompt=task['request']['prompt']
-    assert len(task['request']['messages'])==4
+    assert len(task['request']['messages'])==2
     assert task['role']=='event_writer' and 'Book club plan 1' in prompt and 'Book club plan 2' in prompt
+    reading=json.loads(prompt.split('<event_reading_block_json>\n',1)[1].split('\n</event_reading_block_json>',1)[0])
+    assert {row['source_message_id'] for row in reading}=={3,4}
+    assert 'Agreed to plan 1' not in prompt
     assert '<previous_events_json>' in prompt and '正文通常控制在 500 字以内' in prompt
     assert task['request']['rules'] and task['request']['rules'] not in prompt
     with Store(settings.database) as store:
