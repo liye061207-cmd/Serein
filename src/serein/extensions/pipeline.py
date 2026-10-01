@@ -647,12 +647,21 @@ def request_for(database,batch,role,**fields):
             component=fields['component']
             image_messages=image_source_messages(database,component['context_messages'])
             images,missing=writer_images(image_messages,{m['id'] for m in component['messages']})
+            from ..image_transcription import transcribed_image_receipts
+            cached_images=(transcribed_image_receipts(image_messages,images)
+                           if fields.get('transcription_only') or fields.get('pretranscribed') else [])
+            cached_keys={(image['source_message_id'],image['position']) for image in cached_images}
             skipped=list(component.get('missing_images') or [])
             skipped.extend({'source_message_id':source_id,'reason':'original_missing'} for source_id in missing
                            if not any(row['source_message_id']==source_id for row in skipped))
             gone={(row['source_message_id'],row.get('position')) for row in skipped}
             images=[image for image in images if (image['source_message_id'],image['position']) not in gone]
-            frozen_images=freeze_task_images(database,batch['id'],images,component.get('images',[]),missing=skipped)
+            frozen_images=freeze_task_images(database,batch['id'],
+                [image for image in images if (image['source_message_id'],image['position']) not in cached_keys],
+                component.get('images',[]),missing=skipped)
+            by_key={(image['source_message_id'],image['position']):image for image in [*cached_images,*frozen_images]}
+            frozen_images=[by_key[(image['source_message_id'],image['position'])] for image in images
+                           if (image['source_message_id'],image['position']) in by_key]
             component['missing_images']=skipped
             component['images']=[{key:value for key,value in item.items() if key not in ('url','original_url')}
                                  for item in frozen_images]
@@ -1166,6 +1175,7 @@ async def transcribe_component(database,batch,component,index,runner,*,key_prefi
     cached=reusable_transcriptions(database,component['context_messages'],images)
     if len(cached)==len(images):
         component['curator_image_transcriptions']=cached
+        persist_transcriptions(database,cached)
         return bool(images)
     if not images:return False
     message_ids=[item['source_message_id'] for item in images]
