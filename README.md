@@ -1,7 +1,7 @@
 # Serein
 
-<a href="https://github.com/DasterProkio/awesome-ai-companion/blob/main/README.zh-CN.md">
-  <img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion-zh-CN.png" alt="已收录于人机恋开源项目大全" height="24">
+<a href="https://github.com/DasterProkio/awesome-ai-companion">
+  <img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion.png" alt="Featured in Awesome AI Companion" height="24">
 </a>
 
 让聊天里值得留下的东西，有地方保存，也有机会在下一次被想起。
