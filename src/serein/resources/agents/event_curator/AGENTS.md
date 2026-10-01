@@ -32,6 +32,7 @@
 - 用户或 {ai_name} 的一枚回复可以落定前线并开启后线；前后 Event 可以共同选择完整的 declared bridge unit，但两条 Event 都还应有自己的实际问题、回答、行动或结果，不能只靠 bridge 成立。
 - 若同一枚 unit 明确回答、拒绝、纠正或落定前一活动，又发起得到接续的新活动，前后两条 Event 都应显式选择完整 bridge；host 不自动增加第二个 owner。
 - Router 的 bridge 是共同审阅线索，不强制两侧 Event 都绑定。若某侧只共享对象或背景、没有参与该侧活动，可在 decision_review.bridge_exclusions 写明 unit_root_message_id、excluded_track_id、具体理由及 bridge unit 内逐字 evidence；没有排除项时可省略。不能用排除项丢掉实际回应或收尾。
+- 启用 materials 审阅时，双方共同拥有的 declared bridge 可以分别提供落定前项、开展后项的不同逐字片段；每段引文必须仅在一侧的 main/mixed 中实际保留。双侧都保留的同一引文不能证明边界，不改完整 bridge ownership 来制造独占来源，不跨省略片段拼接引文。未启用 materials 时仍使用各侧独占的 owned 原文。
 - create 不选 base；extend 必须选一个 base；merge 必须选至少两个 base。只选择 base_event_ids 与本轮 owned_unit_roots；host 自动计算“所有所选 base 的旧 sources + 本轮完整 units”的 exact union。
 - 在 rolling_engineering Track 中，必须逐条阅读 active leaf 绑定的原文，而不能用 leaf 数量代替相关性判断。base 与新原文都服务同一 Track throughline 才是相关材料；选择全部相关 leaves：一条用 extend，多条用 merge。关系互动、作品讨论或其他误归线 leaf 保持未选择；即使它是唯一 active leaf，也允许为真正的新工程经历 create。
 - protected、manual、forked、blocked、scene_ref 或 narrative_ref 的旧正文不能被自动重写。若新原文确实接续，仍按实际关系提出带 base_event_ids 和 owned_unit_roots 的 Event；host 只在明确启用且来源版本唯一、可核验时将新段落追加成新版本，其他情况暂缓。不得用 skip 绕过保护，也不要因为保护而把独立的新活动强行写成接续。
@@ -53,7 +54,7 @@
 - defer 只用于两种情况：稳定前段仍被 parked 尾巴回答、纠正或落定；或当前稳定原文命中 protected、manual、forked、blocked、scene_ref、narrative_ref predecessor，必须等待人工处理。parked 尾巴若直接否定、纠正、改写或使紧邻 stable unit 的结果重新未落定，相关 stable unit 必须 defer；parked 尾巴若属于另一问题或 Track，则不影响已经落定的 stable admission。
 - events、skip、defer 必须按 unit root exact-cover 全部 stable units。parked/context_only unit 只可阅读，不输出 disposition。
 - 先检查整个 corridor。只有整个 corridor 都缺少对象、真实起因或被纠正旧主张时，才可请求一次有界 Track context。
-decision_review.events 按索引覆盖全部拟议 Event，说明实际持续展开的活动。若同一 Track 相邻两条 Event，boundaries 必须说明后段另起的活动怎样被接续，并分别逐字引用左、右 Event 各自独占的 owned 原文；不能只贴不同主题标签，也不能为了免写证据而强并独立活动。dispositions 完整覆盖每个 skip/defer unit；同理由可合列。skip 不引用 parked；直接 defer 必须引用输入中真实 parked source ID 并说明它如何影响稳定前段。若是受保护前版导致暂缓，仍提出 extend/merge，由 host 处理保护。
+decision_review.events 按索引覆盖全部拟议 Event，说明实际持续展开的活动。若同一 Track 相邻两条 Event，boundaries 必须说明后段另起的活动怎样被接续，并分别逐字引用左、右 Event 各自独占的 owned 原文，或 materials 审阅确认仅一侧实质保留的共享 bridge 片段；不能只贴不同主题标签，也不能为了免写证据而强并独立活动。dispositions 完整覆盖每个 skip/defer unit；同理由可合列。skip 不引用 parked；直接 defer 必须引用输入中真实 parked source ID 并说明它如何影响稳定前段。若是受保护前版导致暂缓，仍提出 extend/merge，由 host 处理保护。
 
 - 只返回任务指定的 JSON；决定依据填写在 decision_review，不输出 JSON 之外的解释或 Markdown。
 - 不需要补读时返回正常决策 JSON，省略 context_request；该字段为 null 也视为未请求。需要补读时只能单独返回任务指定的非空 context_request 对象，不得混入 events 或其他结果字段。每个 component 最多补读一次，补读后必须返回正常决策。

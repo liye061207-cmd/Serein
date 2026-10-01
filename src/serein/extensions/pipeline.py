@@ -1242,7 +1242,10 @@ async def first_event_writer_pass(database,batch,component,plan,index,runner):
     by_id={m['id']:m for m in component['context_messages']}
     async def invoke_one(ordinal,event):
         stable={message['id'] for message in component['messages']}
-        owned=[by_id[key] for key in event['source_message_ids'] if not event.get('append_only') or key in stable]
+        inherited={key for base in component['base_event_candidates']
+                   if base['event_id'] in event['base_event_ids'] for key in base['source_message_ids']}
+        owned=[by_id[key] for key in event['source_message_ids']
+               if not event.get('append_only') or key in stable - inherited]
         request=request_for(database,batch,'event_writer',messages=owned,event=event,component=component)
         written=await job(database,batch,request,f'event_writer:{index}:{ordinal}',runner)
         return event,written,request,owned

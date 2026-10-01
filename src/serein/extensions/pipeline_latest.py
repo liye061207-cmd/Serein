@@ -171,11 +171,16 @@ def build_event_track_curator_prompt(date_view: str, component: dict[str, Any], 
                      '若告别或玩笑本身正在被讨论则保留。'
                      '附带状态确认和任务回执可省；若其本身是讨论中心或改变结果则保留。拒绝、纠正、条件、因果和有区别的语气不得省。\n'
                      if component.get('writer_material_review') else '')
+    boundary_rule = ('左右各自独占的 owned 原文，或共同拥有的 declared bridge 中仅一侧 main/mixed 实际保留的片段，'
+                     '都可作为该侧逐字边界证据。双侧保留的同一引文不能证明边界；'
+                     '不要删改完整 bridge ownership 制造独占来源；引文不得跨越省略片段拼接。'
+                     if component.get('writer_material_review') else
+                     '边界证据须从左右各自独占的 owned 原文逐字引用。')
     continuity_rule = ('本次共同审阅 continuity_pairs 明确连接的少量 Track。桥接只允许共同审阅，不自动合并 Event。'
                        '若一条 Event 拥有多条 Track 的普通实质 unit，decision_review.continuations 必须按所用 bridge '
                        '给出 event_index、left_track_id、right_track_id、bridge_unit_root、reason，'
                        '以及两侧与桥接原文的逐字 evidence。boundaries 同时覆盖整个 events 数组相邻项和同一 Track 相邻项；'
-                       '同线两条之间夹着别线 Event 也不能漏，重复配对只写一次。每对仍须双方独占的逐字证据。'
+                       '同线两条之间夹着别线 Event 也不能漏，重复配对只写一次。每对仍须双方各有逐字证据。'
                        'Router 声明的 bridge 不自动归属两侧：若一侧 Event 拥有整枚 bridge，另一侧 Event 未拥有，'
                        '须显式共享完整 unit，或在 decision_review.bridge_exclusions 给出 unit_root_message_id、'
                        'excluded_track_id、reason 和该 unit 内的逐字 evidence。仅共享对象或背景可排除；'
@@ -196,7 +201,7 @@ def build_event_track_curator_prompt(date_view: str, component: dict[str, Any], 
     return (f'[memory_phase: event_track_curator]\n日期范围：{date_view}（日期和沉默都不是 Event 边界）\n\n{agent_rules}\n\n{material_rule}{continuity_rule}{admission_rule}'
             '一次完成 admission 与最终 ownership。\n'
             '返回 JSON，decision_review.events 按顺序覆盖所有拟议 Event；同一 Track 的每对相邻 Event 在 boundaries 中说明独立活动，'
-            '并从左右各自独占的 owned 原文逐字引用。dispositions 覆盖所有 skip/defer unit；defer 引用真实 parked source ID，'
+            + boundary_rule + 'dispositions 覆盖所有 skip/defer unit；defer 引用真实 parked source ID，'
             'skip 的 parked_source_message_ids 为空。\n'
             'boundaries 每项格式：'+json.dumps({'left_event_index':0,'right_event_index':1,'reason':'为何是两段独立活动','evidence':[{'source_message_id':1,'quote':'左侧逐字原文'},{'source_message_id':3,'quote':'右侧逐字原文'}]},ensure_ascii=False)+'；没有边界时返回 []。\n'
             'dispositions 每项格式：'+json.dumps({'disposition':'skip','unit_roots':[5],'reason':'处置依据','parked_source_message_ids':[]},ensure_ascii=False)+'；disposition 只能为 skip 或 defer；defer 必须引用真实 parked source ID；没有 skip/defer 时返回 []。\n'
@@ -272,7 +277,19 @@ def _expand_compact_event_curator_output(output: dict[str, Any], component: dict
     root_owner_count: dict[int, int] = {}
     root_owner_tracks: dict[int, list[str]] = {}
     for event in compact_events:
-        for root in event['owned_unit_roots']:
+        raw_base_ids = event['base_event_ids']
+        if not isinstance(raw_base_ids, list):
+            raise ValueError('Track Curator compact base_event_ids must be a list')
+        inherited_ids = set()
+        for base_event_id in raw_base_ids:
+            candidate = base_lookup.get(str(base_event_id or '').strip())
+            if candidate is None:
+                raise ValueError('Track Curator selected a base outside the bounded candidates')
+            inherited_ids.update(int(value) for value in candidate.get('source_message_ids') or [])
+        owned_roots = set(event['owned_unit_roots'])
+        owned_roots.update(root for root, membership in membership_by_root.items()
+                           if inherited_ids.intersection(membership.get('source_message_ids') or [root]))
+        for root in owned_roots:
             root_owner_count[root] = root_owner_count.get(root, 0) + 1
             root_owner_tracks.setdefault(root, []).append(event['primary_track_id'])
     for root, owner_tracks in root_owner_tracks.items():
@@ -320,6 +337,11 @@ def _expand_compact_event_curator_output(output: dict[str, Any], component: dict
                 source_role[source_id] = role
                 if source_id not in ordered_source_ids:
                     ordered_source_ids.append(source_id)
+        for root, membership in membership_by_root.items():
+            if root_owner_count.get(root, 0) > 1:
+                for source_id in membership.get('source_message_ids') or [root]:
+                    if int(source_id) in source_role:
+                        source_role[int(source_id)] = 'bridge'
         primary_track_id = event['primary_track_id']
         declared_reading_tracks = {primary_track_id}
         for root in event['owned_unit_roots']:
@@ -505,8 +527,8 @@ def _normalize_expanded_event_curator_output(output: dict[str, Any], component: 
         blocked_candidates = list({candidate['event_id']: candidate for candidate in [*selected_candidates, *colliding_candidates] if candidate['blocking_flags']}.values())
         append_only = (bool(blocked_candidates) and len(selected_candidates) == 1 and action == 'extend'
                        and not colliding_candidates and selected_candidates[0]['continuation_allowed']
-                       and not stable_ids.intersection(selected_source_ids)
-                       and any(item['source_message_id'] in stable_ids for item in bindings))
+                       and 'forked' not in selected_candidates[0]['blocking_flags']
+                       and any(item['source_message_id'] in stable_ids - selected_source_ids for item in bindings))
         if append_only:
             blocked_candidates = []
         if blocked_candidates:
