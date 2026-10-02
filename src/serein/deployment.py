@@ -14,7 +14,7 @@ DEFAULT_UPSTREAM = {'base_url': '', 'model': '', 'writer_model': '', 'api_key': 
                     'writer_enabled': False, 'memory_enabled': False, 'operit_enabled': True}
 DEFAULT_FEATURES = {'memos':False, 'persona':False, 'anti_retreat':False, 'window_shadows':False, 'association':False, 'write_context':False, 'relations_auto_accept':False, 'resume':False, 'originals':False, 'favorites':False, 'narrative_tools':False, 'narrative_nightly_organize':False, 'event_to_scene':False, 'current_time':False, 'image_transcription_async':False, 'image_eyes':False}
 DEFAULT_CLOCK = {'timezone':'Asia/Shanghai'}
-DEFAULT_RESUME = {'latest_shadow':True, 'recent_events':True, 'favorite_scenes':True, 'selected_memories':False, 'selected_ids':[],
+DEFAULT_RESUME = {'mode':'command', 'latest_shadow':True, 'recent_events':True, 'favorite_scenes':True, 'selected_memories':False, 'selected_ids':[],
                   'recent_originals':False, 'recent_original_limit':20, 'pending_originals':True}
 DEFAULT_DOMAINS = [
     {'key':'relationship','label':'关系','description':'身份、称呼、承诺、边界与沟通方式','policy':'normal'},
@@ -130,6 +130,8 @@ def read_settings(database, *, public=False):
 def save_settings(database, changes):
     changes=deepcopy(changes)
     resume_changes=changes.get('resume') or {}
+    if 'mode' in resume_changes and resume_changes['mode'] not in ('command','mcp'):
+        raise ValueError('Resume mode must be command or mcp')
     if resume_changes.get('recent_originals') is True:
         resume_changes['pending_originals']=False
     elif resume_changes.get('pending_originals') is True:

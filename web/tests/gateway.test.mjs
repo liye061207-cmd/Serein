@@ -105,6 +105,15 @@ test('gateway separates web auth from API auth, saves settings and streams respo
     const saved=await fetch(base+'/__serein/settings',{method:'PATCH',headers:{...auth,'Content-Type':'application/json',Origin:base},body:'{"identity":{"user_name":"Example"}}'});
     assert.equal(saved.status,200);
     assert.ok(requests.some(r=>r.path==='/v1/settings'&&r.method==='PATCH'&&r.auth==='Bearer synthetic-api-key'));
+    const resumeHeaders={...auth,'Content-Type':'application/json',Origin:base};
+    const resume=await fetch(base+'/__serein/resume',{method:'POST',headers:resumeHeaders,body:'{"cursor":""}'});
+    assert.equal(resume.status,200);
+    assert.equal(resume.headers.get('cache-control'),'no-store');
+    assert.ok(requests.some(r=>r.path==='/v1/extensions/resume'&&r.method==='POST'&&r.auth==='Bearer synthetic-api-key'));
+    assert.equal((await fetch(base+'/__serein/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,401);
+    const beforeCrossSite=requests.length;
+    assert.equal((await fetch(base+'/__serein/resume',{method:'POST',headers:{...resumeHeaders,Origin:'https://unrelated.example'},body:'{}'})).status,403);
+    assert.equal(requests.length,beforeCrossSite);
     const discovery=await fetch(base+'/__serein/settings/models/discover',{method:'POST',headers:{...auth,'Content-Type':'application/json',Origin:base},body:'{"upstream_id":"test","base_url":"https://provider.example/v1"}'});
     assert.equal(discovery.status,200);
     assert.ok(requests.some(r=>r.path==='/v1/settings/models/discover'&&r.method==='POST'&&r.auth==='Bearer synthetic-api-key'));

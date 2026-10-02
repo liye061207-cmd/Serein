@@ -195,8 +195,11 @@ def routes(settings, services, auth):
                         'clock':state['clock']}
         cache_window = window_id + ':' + digest(encode(cache_contract)) if window_id else uuid4().hex
         resume_query = chat_resume.continuation(query)
+        command_resume = state['features']['resume'] and state['resume']['mode']=='command'
         if resume_query is not None and not state['features']['resume']:
             raise HTTPException(409, 'Enable resume in Settings before using /resume')
+        if resume_query is not None and not command_resume:
+            raise HTTPException(409, 'MCP resume is active; use the resume tool or select command mode in Settings')
         snapshot_key, snapshot = context._find_turn_injection_snapshot(cache_window, incoming, body)
         replay = snapshot is not None and (not query or len(incoming)==snapshot['source_message_count'])
         selected = []
@@ -217,7 +220,7 @@ def routes(settings, services, auth):
             stable = activity = recalled = ''
             messages = remove_images_for_eyes(incoming) if state['features'].get('image_eyes') else incoming
             retained_anchor = ''
-            if resume_query is None and state['features']['resume']:
+            if resume_query is None and command_resume:
                 resume_snapshot = await asyncio.to_thread(chat_resume.retained, services, window_id, incoming, context)
                 if resume_snapshot:
                     messages, retained_anchor = chat_resume.mark_retained_anchor(messages, resume_snapshot, context)

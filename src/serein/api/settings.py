@@ -143,6 +143,7 @@ class TaggingPatch(BaseModel):
 
 class ResumePatch(BaseModel):
     model_config = ConfigDict(extra='forbid')
+    mode: Literal['command','mcp'] | None = None
     latest_shadow: bool | None = None
     recent_events: bool | None = None
     favorite_scenes: bool | None = None

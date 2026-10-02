@@ -19,8 +19,12 @@ def routes(application, auth):
             inspect.signature(tools[name]).bind(**arguments)
         except TypeError as exc:
             raise HTTPException(400, str(exc)) from None
-        if inspect.iscoroutinefunction(tools[name]):
-            return await tools[name](**arguments)
-        return await run_in_threadpool(tools[name], **arguments)
+        from ..extensions.handoff import ResumeLimit
+        try:
+            if inspect.iscoroutinefunction(tools[name]):
+                return await tools[name](**arguments)
+            return await run_in_threadpool(tools[name], **arguments)
+        except ResumeLimit as exc:
+            raise HTTPException(413,str(exc)) from None
 
     return router

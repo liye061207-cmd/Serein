@@ -761,6 +761,22 @@ function sereinMemoryBridge() {
         }catch{response.statusCode=502;response.end(JSON.stringify({detail:"旧库操作暂未完成，请刷新任务状态后重试。"}));}
       });
 
+      server.middlewares.use("/__serein/resume", async (request,response) => {
+        response.setHeader("Content-Type","application/json; charset=utf-8");
+        response.setHeader("Cache-Control","no-store");
+        if(request.method!=="POST" || !["","/"].includes(request.url?.split("?")[0])) {
+          response.statusCode=405;response.end(JSON.stringify({error:"method_not_allowed"}));return;
+        }
+        try {
+          if(!String(request.headers["content-type"]).startsWith("application/json") ||
+            (request.headers.origin && new URL(request.headers.origin).host!==request.headers.host)) {
+            response.statusCode=403;response.end(JSON.stringify({error:"origin_not_allowed"}));return;
+          }
+          const result=await callSereinBackend("/v1/extensions/resume",{method:"POST",body:await readJsonBody(request,8000)});
+          response.statusCode=result.status;response.end(JSON.stringify(result.payload));
+        } catch {response.statusCode=502;response.end(JSON.stringify({detail:"续接资料暂时不可用，请重新读取。"}));}
+      });
+
       server.middlewares.use("/__serein/settings", async (request, response) => {
         response.setHeader("Content-Type", "application/json; charset=utf-8");
         response.setHeader("Cache-Control", "no-store");
