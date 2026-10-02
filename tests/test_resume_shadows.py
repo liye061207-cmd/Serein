@@ -30,6 +30,66 @@ def test_resume_http_toggle_and_persistent_selection_without_mcp_tool(settings):
         assert client.post('/v1/extensions/resume',json={'window_id':'new'}).status_code==404
 
 
+def test_draft_resume_preview_pages_without_saving_or_changing_tool_selection(settings):
+    save_settings(settings.database,{'features':{'resume':True},'resume':{'mode':'mcp',
+        'latest_shadow':False,'recent_events':False,'favorite_scenes':False,'pending_originals':False}})
+    body='Synthetic long draft material.\n'*1000
+    with Store(settings.database) as store:
+        store.create('draft-preview','event','Synthetic draft',body)
+        store.create('archived-preview','scene','Archived draft','Hidden',lifecycle='archived')
+    before=read_settings(settings.database)
+    draft={'selected_memories':True,'selected_ids':['draft-preview','archived-preview']}
+    client=TestClient(create_app(settings,token='test',live=True),headers={'Authorization':'Bearer test'})
+    first=client.post('/v1/extensions/resume',json={'selection':draft}).json()
+    assert first['has_more'] and first['total_items']==1 and first['injected'] is False
+    pages=[first];cursor=first['next_cursor']
+    while cursor:
+        response=client.post('/v1/extensions/resume',json={'selection':draft,'cursor':cursor})
+        assert response.status_code==200,response.text
+        page=response.json();assert page['collection_id']==first['collection_id']
+        pages.append(page);cursor=page['next_cursor']
+    assert ''.join(item['body_md'] for page in pages for item in page['items'])==body
+    assert read_settings(settings.database)==before
+    assert client.post('/v1/extensions/resume',json={}).json()['items']==[]
+    result=asyncio.run(create_server(Application(settings)).call_tool('resume',{}))
+    blocks=result[0] if isinstance(result,tuple) else result
+    assert 'total_items: 0' in blocks[0].text
+    changed=client.post('/v1/extensions/resume',json={'selection':{'selected_memories':False},'cursor':first['next_cursor']})
+    assert changed.status_code==400 and 'changed; restart resume' in changed.json()['detail']
+    with pytest.raises(Exception,match='Unexpected resume arguments'):
+        asyncio.run(create_server(Application(settings)).call_tool('resume',{'selection':draft}))
+    save_settings(settings.database,{'features':{'resume':False}})
+    assert client.post('/v1/extensions/resume',json={'selection':draft}).status_code==404
+
+
+@pytest.mark.parametrize('draft',[
+    [],{'mode':'mcp'},{'mode':None},{'recent_events':'true'},{'recent_original_limit':0},
+    {'recent_original_limit':51},{'recent_original_limit':True},{'selected_ids':['x']*201},
+    {'selected_ids':['']},{'features':{'resume':True}},
+])
+def test_draft_resume_preview_validates_content_options_without_saving(settings,draft):
+    save_settings(settings.database,{'features':{'resume':True}})
+    before=read_settings(settings.database)
+    client=TestClient(create_app(settings,token='test',live=True),headers={'Authorization':'Bearer test'})
+    assert client.post('/v1/extensions/resume',json={'selection':draft}).status_code==422
+    assert read_settings(settings.database)==before
+
+
+def test_draft_resume_preview_keeps_recent_and_pending_originals_exclusive(settings):
+    save_settings(settings.database,{'features':{'resume':True},'resume':{'recent_events':False,
+        'favorite_scenes':False,'pending_originals':True}})
+    raw_archive(settings).ingest([{'source_event_id':str(index),'session_id':'synthetic',
+        'role':'user','text':f'Synthetic original {index}'} for index in range(3)],source='synthetic')
+    before=read_settings(settings.database)
+    client=TestClient(create_app(settings,token='test',live=True),headers={'Authorization':'Bearer test'})
+    response=client.post('/v1/extensions/resume',json={'selection':{'recent_originals':True,'recent_original_limit':1}})
+    assert response.status_code==200,response.text
+    page=response.json()
+    assert page['total_recent_originals']==1 and page['total_pending_originals']==0
+    assert [item['section'] for item in page['items']]==['recent_original']
+    assert read_settings(settings.database)==before
+
+
 def test_mcp_resume_mode_hot_switch_and_text_only_read(settings):
     server=create_server(Application(settings))
     names=lambda:{tool.name for tool in asyncio.run(server.list_tools())}

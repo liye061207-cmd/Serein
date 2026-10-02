@@ -772,7 +772,7 @@ function sereinMemoryBridge() {
             (request.headers.origin && new URL(request.headers.origin).host!==request.headers.host)) {
             response.statusCode=403;response.end(JSON.stringify({error:"origin_not_allowed"}));return;
           }
-          const result=await callSereinBackend("/v1/extensions/resume",{method:"POST",body:await readJsonBody(request,8000)});
+          const result=await callSereinBackend("/v1/extensions/resume",{method:"POST",body:await readJsonBody(request,256*1024)});
           response.statusCode=result.status;response.end(JSON.stringify(result.payload));
         } catch {response.statusCode=502;response.end(JSON.stringify({detail:"续接资料暂时不可用，请重新读取。"}));}
       });

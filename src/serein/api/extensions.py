@@ -14,6 +14,16 @@ def routes(application, auth):
         tools = {k:v for k,v in application.contributions.tools.items() if k not in builtins}
         if name not in tools:
             raise HTTPException(404, 'Feature is disabled or unavailable')
+        if name=='resume' and arguments.get('selection') is not None:
+            from .settings import ResumePatch
+            from pydantic import ValidationError
+            try:
+                selection=ResumePatch.model_validate(arguments['selection'],strict=True)
+                if 'mode' in selection.model_fields_set:
+                    raise ValueError('Preview selection cannot change resume mode')
+                arguments={**arguments,'selection':selection.model_dump(exclude_none=True)}
+            except (ValidationError,ValueError):
+                raise HTTPException(422,'Invalid resume preview selection; use content options only') from None
         import inspect
         try:
             inspect.signature(tools[name]).bind(**arguments)

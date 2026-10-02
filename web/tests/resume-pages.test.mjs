@@ -23,3 +23,11 @@ test('changed collections, duplicate pages and missing fragments cannot be copie
   const pages=appendResumePage([first],second,first.next_cursor);
   assert.throws(()=>appendResumePage(pages,second,first.next_cursor),/已变化/);
 });
+
+test('emoji fragments use server character offsets and retain the complete original text',()=>{
+  const start={...first,items:[{...first.items[0],body_md:'雨🌧️',body_offset:0}]};
+  const end={...second,items:[{...second.items[0],body_md:'继续聊。',body_offset:3}]};
+  const pages=appendResumePage([start],end,start.next_cursor);
+  assert.equal(resumeMaterials(pages)[0].body_md,'雨🌧️继续聊。');
+  assert.match(resumePagesText(pages),/雨🌧️继续聊。/);
+});

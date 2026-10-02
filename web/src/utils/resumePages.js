@@ -3,7 +3,7 @@ export function resumeMaterials(pages) {
   for(const page of pages)for(const fragment of page.items) {
     const previous=items.at(-1);
     if(previous?.id===fragment.id) {
-      if(previous.body_complete||fragment.body_offset!==previous.body_md.length)throw new Error('续接资料页不连续，请从头重新读取。');
+      if(previous.body_complete||fragment.body_offset!==Array.from(previous.body_md).length)throw new Error('续接资料页不连续，请从头重新读取。');
       previous.body_md+=fragment.body_md;previous.body_complete=fragment.body_complete;
     } else {
       if(fragment.body_offset!==0)throw new Error('续接资料缺少前一页，请从头重新读取。');

@@ -68,12 +68,16 @@ def factory(services, options):
                 (key,text,revision,now()))
             return {'key':key,'revision':revision,'status':'saved'}
 
-    def resume(window_id: str = 'main', cursor: str = '', handoff_key: str = '', source_session_id: str = ''):
+    def resume(window_id: str = 'main', cursor: str = '', handoff_key: str = '', source_session_id: str = '', selection: dict | None = None):
         """Read selected continuity sections: latest shadow, ten recent Events, favorite Scenes, selected memories, recent originals and pending originals. Call with no arguments to start; window_id is optional and defaults to main. Pass next_cursor as cursor until all pages are read; do not rewrite a portrait."""
         from ..deployment import read_settings
         from ..compat.window_shadows import latest_shadow
         state = read_settings(database)
-        selection = state["resume"]
+        # HTTP previews can read a validated draft; MCP and chat use saved options.
+        overrides=selection or {}
+        selection={**state['resume'],**overrides}
+        if overrides.get('recent_originals') is True:selection['pending_originals']=False
+        elif overrides.get('pending_originals') is True:selection['recent_originals']=False
         if not isinstance(cursor,str) or len(cursor)>MAX_CURSOR_CHARS:
             raise ValueError('Invalid resume cursor')
         if any(not isinstance(value,str) or len(value)>200 for value in (window_id,handoff_key,source_session_id)):
