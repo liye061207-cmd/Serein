@@ -69,11 +69,18 @@ class ModelConnection(BaseModel):
         return self
 
 
+class TokenizerWindow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    path: str = Field(min_length=1, max_length=2000)
+    max_tokens: int = Field(ge=8, le=1000000)
+
+
 class ModelEntry(ModelConnection):
     id: str = Field(min_length=1, max_length=100)
     label: str = Field(min_length=1, max_length=100)
     model: str = Field(min_length=1, max_length=200)
     dimension: int | None = Field(default=None, ge=1, le=65536)
+    tokenizer: TokenizerWindow | None = None
     query_instruction: str = Field(default='', max_length=1000)
     document_instruction: str = Field(default='', max_length=1000)
 
@@ -84,6 +91,7 @@ class ModelRoute(BaseModel):
     upstream_model: str = Field(min_length=1, max_length=200)
     label: str = Field(default='', max_length=100)
     dimension: int | None = Field(default=None, ge=1, le=65536)
+    tokenizer: TokenizerWindow | None = None
     query_instruction: str = Field(default='', max_length=1000)
     document_instruction: str = Field(default='', max_length=1000)
 

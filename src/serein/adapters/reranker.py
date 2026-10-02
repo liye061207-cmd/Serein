@@ -26,17 +26,28 @@ class RerankerProviderError(ValueError):
         self.code = code
 
 
+class RerankScores(dict):
+    """Scores and their source excerpts belong to this request, not the client."""
+    def __init__(self):
+        super().__init__()
+        self.evidence = {}
+
+
 class RerankerClient:
-    def __init__(self, endpoint, model, api_key_env=None, api_key=None):
+    def __init__(self, endpoint, model, api_key_env=None, api_key=None, tokenizer=None):
         url = urlparse(endpoint)
         local_http = url.scheme == 'http' and url.hostname in ('localhost','127.0.0.1','::1')
         if (url.scheme != "https" and not local_http) or not url.hostname or url.username or url.password:
             raise ValueError("Reranker endpoint must use HTTPS without embedded credentials")
         self.endpoint, self.model, self.api_key_env = endpoint, model, api_key_env
         self.api_key = api_key
+        from .token_window import TokenWindow
+        self.window = TokenWindow(tokenizer) if tokenizer else None
         self.instruction = (MEMORY_RELEVANCE_INSTRUCTION
                             if url.hostname == 'api.siliconflow.cn' and model in _INSTRUCTION_MODELS
                             else None)
+        if self.window and self.instruction:
+            raise ValueError('Token window currently supports standard query/document pair rerankers only')
 
     def __call__(self, text, documents, *, client=None):
         import httpx
@@ -45,9 +56,30 @@ class RerankerClient:
         key = self.api_key if self.api_key is not None else os.environ.get(self.api_key_env or '')
         if self.api_key is None and not key:
             raise ValueError(f"Set the configured reranker credential environment variable: {self.api_key_env}")
-        payload = {"model": self.model, "query": text,
-                   "documents": [doc.get('rerank_text', f"{doc['title']}\n{doc['body']}") for doc in documents],
-                   "top_n": len(documents), "return_documents": False}
+        inputs, owners, evidence = [], [], []
+        for doc in documents:
+            prepared = doc.get('rerank_text', f"{doc['title']}\n{doc['body']}")
+            if self.window and doc.get('source_body') is not None:
+                body = doc['source_body']
+                prefix = f"title: {doc['title']}\nbody: "
+                spans = doc.get('source_regions', [(0,len(body))])
+                passages = doc.get('source_passages', [])
+                if not self.window.fits(prefix + body, query=text) and passages:
+                    spans = [(p['start_offset'],p['end_offset']) for p in passages[:2]
+                             if body[p['start_offset']:p['end_offset']] == p['text']]
+                for a,b in spans:
+                    for start,end in self.window.spans(body[a:b],prefix=prefix,query=text):
+                        excerpt = body[a+start:a+end]
+                        inputs.append(prefix + excerpt);owners.append(doc['ref'])
+                        evidence.append({'text':excerpt,'start_offset':a+start,'end_offset':a+end,
+                            'input_tokens':self.window.count(prefix + excerpt,query=text)})
+            elif self.window:
+                for a,b in self.window.spans(prepared, query=text):
+                    inputs.append(prepared[a:b]);owners.append(doc['ref']);evidence.append(None)
+            else:
+                inputs.append(prepared);owners.append(doc['ref']);evidence.append(None)
+        payload = {"model": self.model, "query": text, "documents":inputs,
+                   "top_n":len(inputs), "return_documents":False}
         if self.instruction:
             payload['instruction'] = self.instruction
         owned = client is None
@@ -56,15 +88,20 @@ class RerankerClient:
             response = client.post(self.endpoint, json=payload, headers={"Authorization": f"Bearer {key}"} if key else {})
             if response.status_code != 200:
                 raise RerankerProviderError(f'http_{response.status_code}', f"Reranker provider returned HTTP {response.status_code}; response body omitted")
-            scores = {}
+            scores = RerankScores()
+            seen = set()
             for item in response.json()["results"]:
                 index, score = item["index"], item["relevance_score"]
-                if type(index) is not int or not 0 <= index < len(documents):
+                if type(index) is not int or not 0 <= index < len(inputs):
                     raise ValueError("Reranker returned an invalid document index")
-                ref = documents[index]["ref"]
-                if ref in scores or type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 1:
+                ref = owners[index]
+                if index in seen or type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 1:
                     raise ValueError("Reranker returned duplicate results or an invalid relevance score")
-                scores[ref] = score
+                seen.add(index)
+                if ref not in scores or score > scores[ref]:
+                    scores[ref] = score
+                    if evidence[index] is not None:
+                        scores.evidence[ref] = evidence[index]
             return scores
         except httpx.TimeoutException:
             raise RerankerProviderError('timeout', "Reranker provider request timed out") from None

@@ -75,6 +75,14 @@ def render(hits, *, reader=None, body_char_limit=1200, scope_arc_key='', deliver
         source = doc['body_md']
         if hit['kind'] == 'scene':
             source = bucket_text_for_embedding({'content': source, 'metadata': {'memory_value_source': 'authored_scene', **doc['metadata']}})
+        excerpt = hit.get('body_excerpt')
+        if excerpt:
+            from .passages import regions
+            start,end = excerpt['start_offset'],excerpt['end_offset']
+            if (doc['body_md'][start:end] != excerpt['text'] or
+                    not any(a <= start < end <= b for a,b in regions(doc))):
+                raise ValueError('Recall excerpt must match a canonical evidence region')
+            source = excerpt['text']
         body = GatewayService._clip_text(source.strip(), max(160, min(2400, int(body_char_limit or 1200))))
         if not body:
             continue
@@ -83,6 +91,9 @@ def render(hits, *, reader=None, body_char_limit=1200, scope_arc_key='', deliver
         card = {'id': ref, 'source': 'serein', 'source_kind': hit['kind'], 'title': title,
                 'text': body, 'score': round(float(hit.get('score') or 0), 4), 'render_shape': 'typed_memory',
                 **memory_dates(doc, hit['kind'])}
+        if excerpt:
+            card['source_spans'] = [{'start_offset':start,'end_offset':end}]
+            card['reranker_input_tokens'] = excerpt.get('input_tokens')
         cards.append(card)
         lines = [f'[typed_memory ref={ref}]', f'title: {title}']
         lines.extend(date_lines(card))
