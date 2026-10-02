@@ -252,7 +252,8 @@ def routes(settings, services, auth):
                 from ..chat_state import recent_deliveries
                 cooldown = list(dict.fromkeys([*recent_deliveries(settings.database,window_id), *delivered_ids]))
                 result = await asyncio.to_thread(services.recall, query, method='semantic', mode='surface',
-                    min_cosine=-1, limit=2, delivered_ids=cooldown, deadline_at=time.monotonic()+30)
+                    min_cosine=-1, limit=2, user_utterance=True,
+                    delivered_ids=cooldown, deadline_at=time.monotonic()+30)
                 recalled = result.get('context','')
                 selected = result.get('selected_refs',[]) if recalled else []
                 summary = recall_summary(result)
