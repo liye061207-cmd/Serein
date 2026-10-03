@@ -62,16 +62,38 @@ class RerankerClient:
             if self.window and doc.get('source_body') is not None:
                 body = doc['source_body']
                 prefix = f"title: {doc['title']}\nbody: "
-                spans = doc.get('source_regions', [(0,len(body))])
-                passages = doc.get('source_passages', [])
-                if not self.window.fits(prefix + body, query=text) and passages:
-                    spans = [(p['start_offset'],p['end_offset']) for p in passages[:2]
-                             if body[p['start_offset']:p['end_offset']] == p['text']]
+                allowed = doc.get('source_regions', [(0,len(body))])
+                budget = max(160, min(2400, int(doc.get('body_char_limit') or 1200)))
+                projection = ''.join(body[a:b] for a,b in allowed)
+                # Keep all valid Scene evidence together when the complete input fits.
+                if len(projection) <= budget and self.window.fits(prefix + projection, query=text):
+                    inputs.append(prefix + projection); owners.append(doc['ref'])
+                    item = {'text':projection,
+                        'source_spans':[{'start_offset':a,'end_offset':b} for a,b in allowed],
+                        'input_tokens':self.window.count(prefix + projection,query=text)}
+                    if len(allowed) == 1:
+                        item.update(start_offset=allowed[0][0],end_offset=allowed[0][1])
+                    evidence.append(item)
+                    continue
+                spans = allowed
+                seeds = []
+                for passage in doc.get('source_passages', []):
+                    a,b = passage.get('start_offset'),passage.get('end_offset')
+                    if (type(a) is int and type(b) is int and
+                            any(x <= a < b <= y for x,y in allowed) and
+                            body[a:b] == passage.get('text')):
+                        seeds.append((a,b))
+                    if len(seeds) == 2:
+                        break
+                if seeds:
+                    spans = seeds
                 for a,b in spans:
-                    for start,end in self.window.spans(body[a:b],prefix=prefix,query=text):
+                    for start,end in self.window.spans(body[a:b],prefix=prefix,query=text,
+                            max_chars=len(prefix)+budget):
                         excerpt = body[a+start:a+end]
                         inputs.append(prefix + excerpt);owners.append(doc['ref'])
                         evidence.append({'text':excerpt,'start_offset':a+start,'end_offset':a+end,
+                            'source_spans':[{'start_offset':a+start,'end_offset':a+end}],
                             'input_tokens':self.window.count(prefix + excerpt,query=text)})
             elif self.window:
                 for a,b in self.window.spans(prepared, query=text):

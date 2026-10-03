@@ -46,6 +46,18 @@ class TokenWindow:
                     high = middle - 1
             if end == start:
                 raise ValueError('Token window cannot fit the next source character')
+            if end == len(text):
+                # Anchor the final window at the source end: a short trailing
+                # overlap alone can otherwise split a tail fact across inputs.
+                low = max(0, end-(max_chars-len(prefix))) if max_chars is not None else 0
+                high, tail = start, start
+                while low <= high:
+                    middle = (low+high)//2
+                    if self.fits(prefix+text[middle:end],query=query):
+                        tail, high = middle, middle-1
+                    else:
+                        low = middle+1
+                start = tail
             yield start, end
             if end == len(text):
                 break

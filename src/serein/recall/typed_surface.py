@@ -516,6 +516,7 @@ def run(engine, query, result, gate, decision, embedding, *, cutoff, limit, use_
             documents=[{'ref':upstream._typed_owner_ref(row),'title':snapshot.objects[row['owner_id']]['document']['title'], 'body':'',
                         'source_body':snapshot.objects[row['owner_id']]['document']['body_md'],
                         'source_regions':regions(snapshot.objects[row['owner_id']]['document']),
+                        'body_char_limit':body_char_limit,
                         'source_passages':snapshot.passages.get(row['owner_id'], []),
                         'rerank_text':memory_document(snapshot.objects[row['owner_id']]['document'],
                             snapshot.passages.get(row['owner_id'], []))} for row in rows]

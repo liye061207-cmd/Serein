@@ -136,7 +136,7 @@ Embedding 使用 `/embeddings`，Reranker 使用 `/rerank`；选择相应用途�
 
 路径必须指向本地已准备好的、与服务端相同 revision 的 fast tokenizer；不会自动下载、读取厂商凭证或执行远端代码。未配置此字段时保持原字符预算行为。当前页面没有新增输入控件，使用模型设置 API 保存；无需修改角色身份或相关性门槛。Embedding/Reranker 分别配置自身窗口，例如128和512，不能共享猜测的值。保存后重新建立检索索引；窗口配置进入派生索引指纹。
 
-开启 Passage 后，窗口适配统计标题、Embedding instruction、query pair 和特殊 token 开销，并同时遵守字符预算。超窗整卡不记作全文向量覆盖；原文仍完整保留。Reranker 将相关原文片段分别重排，最大片段分数归于所属记忆，命中片段附原文offset及pair token数再传入召回渲染。无相关passage时在允许的证据区域内切片；不改写Scene或扩大证据区域。
+开启 Passage 后，窗口适配统计标题、Embedding instruction、query pair 和特殊 token 开销，并同时遵守字符预算。超窗整卡不记作全文向量覆盖；原文仍完整保留。Reranker 优先将完整有效证据投影一起重排（即使Scene证据分属不连续区域）；只有超过token窗口或实际每卡交付字符预算时才切片。切片同时计入当前body_char_limit，默认1200，不放大现有预算。随后将相关原文片段分别重排，最大片段分数归于所属记忆，命中片段附原文offset及pair token数再传入召回渲染。无相关passage时在允许的证据区域内切片；不改写Scene或扩大证据区域。
 
 此适配只支持标准query/document pair reranker；带独立provider instruction/特殊聊天模板的重排模型暂不允许开启，因为本地pair tokenizer无法证明服务端模板开销。窗口小到容不下查询、instruction或下一个字符时明确失败，不静默截断查询。模型服务端必须使用相同预处理，配置无法验证远端自定义模板。
 

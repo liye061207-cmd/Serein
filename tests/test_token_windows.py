@@ -132,3 +132,45 @@ def test_embedding_preparation_and_passages_send_tail_without_truncation(tmp_pat
     with sqlite3.connect(index) as conn:
         spans=conn.execute('SELECT start_offset,end_offset,text FROM passages').fetchall()
     assert all(body[a:b]==text for a,b,text in spans)
+
+
+@pytest.mark.parametrize('budget',[1200,160])
+def test_tail_fact_survives_actual_delivery_budget(tokenizer_path,budget):
+    rank=RerankerClient('http://127.0.0.1/rerank','synthetic',api_key='',
+        tokenizer={'path':tokenizer_path,'max_tokens':512})
+    body='inspection light window unchanged '*180+'spare key K-47 blue toolbox second layer'
+    doc={'ref':'event:long','title':'inspection','body':'','source_body':body,'body_char_limit':budget}
+    def server(request):
+        payload=json.loads(request.content)
+        return httpx.Response(200,json={'results':[{'index':i,'relevance_score':.9 if 'K-47' in s and 'second layer' in s else .1}
+            for i,s in enumerate(payload['documents'])]})
+    with httpx.Client(transport=httpx.MockTransport(server)) as client:
+        scores=rank('spare key',[doc],client=client)
+    hit={'id':'long','kind':'event','score':.9,'object':{'document':{'kind':'event','title':'inspection',
+        'body_md':body,'metadata':{}}},'body_excerpt':scores.evidence['event:long']}
+    result=render([hit],body_char_limit=budget)
+    assert 'K-47' in result['context'] and 'second layer' in result['context']
+    assert len(result['cards'][0]['text'])<=budget
+
+
+def test_short_scene_keeps_all_discontinuous_evidence_in_one_pair(tokenizer_path):
+    from serein.recall.passages import regions
+    rank=RerankerClient('http://127.0.0.1/rerank','synthetic',api_key='',
+        tokenizer={'path':tokenizer_path,'max_tokens':512})
+    body='inspection light\n## comment\nPRIVATE CONTEXT\n## spare key\nK-47 blue toolbox second layer\n'
+    document={'kind':'scene','title':'inspection','body_md':body,'metadata':{}}
+    allowed=regions(document)
+    def server(request):
+        payload=json.loads(request.content)
+        assert len(payload['documents'])==1
+        text=payload['documents'][0]
+        assert 'inspection light' in text and 'K-47' in text and 'PRIVATE' not in text
+        return httpx.Response(200,json={'results':[{'index':0,'relevance_score':.9}]})
+    doc={'ref':'scene:one','title':'inspection','body':'','source_body':body,'source_regions':allowed}
+    with httpx.Client(transport=httpx.MockTransport(server)) as client:
+        scores=rank('spare key',[doc],client=client)
+    hit={'id':'one','kind':'scene','score':.9,'object':{'document':document},'body_excerpt':scores.evidence['scene:one']}
+    result=render([hit])
+    assert 'inspection light' in result['context'] and 'K-47' in result['context']
+    assert 'PRIVATE' not in result['context']
+    assert result['cards'][0]['source_spans']==[{'start_offset':a,'end_offset':b} for a,b in allowed]
