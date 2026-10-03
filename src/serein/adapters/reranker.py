@@ -65,6 +65,8 @@ class RerankerClient:
                 allowed = doc.get('source_regions', [(0,len(body))])
                 budget = max(160, min(2400, int(doc.get('body_char_limit') or 1200)))
                 projection = ''.join(body[a:b] for a,b in allowed)
+                if not projection.strip():
+                    continue
                 # Keep all valid Scene evidence together when the complete input fits.
                 if len(projection) <= budget and self.window.fits(prefix + projection, query=text):
                     inputs.append(prefix + projection); owners.append(doc['ref'])
@@ -100,6 +102,8 @@ class RerankerClient:
                     inputs.append(prepared[a:b]);owners.append(doc['ref']);evidence.append(None)
             else:
                 inputs.append(prepared);owners.append(doc['ref']);evidence.append(None)
+        if not inputs:
+            return RerankScores()
         payload = {"model": self.model, "query": text, "documents":inputs,
                    "top_n":len(inputs), "return_documents":False}
         if self.instruction:

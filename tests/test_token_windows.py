@@ -174,3 +174,47 @@ def test_short_scene_keeps_all_discontinuous_evidence_in_one_pair(tokenizer_path
     assert 'inspection light' in result['context'] and 'K-47' in result['context']
     assert 'PRIVATE' not in result['context']
     assert result['cards'][0]['source_spans']==[{'start_offset':a,'end_offset':b} for a,b in allowed]
+
+
+def test_empty_scene_excerpt_is_safely_skipped():
+    document={'kind':'scene','title':'inspection','body_md':'## comment\nPRIVATE CONTEXT\n','metadata':{}}
+    hit={'id':'empty','kind':'scene','score':.9,'object':{'document':document},
+         'body_excerpt':{'text':'','source_spans':[],'input_tokens':17}}
+    result=render([hit])
+    assert result['cards']==[] and 'PRIVATE' not in result['context']
+
+
+def test_empty_scene_candidate_does_not_fail_recall(tmp_path,tokenizer_path,monkeypatch):
+    import sqlite3
+    from serein.config import Settings
+    from serein.core.store import Store
+    from serein.recall.index import build_index
+    from serein.recall.service import Recall
+    profile=dict(model='synthetic',provider_host='127.0.0.1',query_instruction='',document_instruction='',max_chars=6000)
+    settings=Settings(tmp_path/'memory.db',tmp_path/'index.db',embedding={'endpoint':'unused'},
+        recall={'routing_file':'synthetic-routes'})
+    with Store(settings.database) as store:
+        store.create('empty','scene','手机维修','## comment\nPRIVATE CONTEXT\n')
+    build_index(settings.database,settings.index)
+    # Abnormal legacy/custom candidate; normal indexing excludes empty evidence.
+    with sqlite3.connect(settings.index) as conn:
+        conn.execute("INSERT INTO settings VALUES ('embedding_profile',?)",(json.dumps(profile),))
+        conn.execute("INSERT INTO settings VALUES ('embedding_dimension','2')")
+        conn.execute("INSERT INTO vectors VALUES ('empty','[1,0]',2)")
+    class Embedding:
+        def __init__(self,*args,**kwargs):pass
+        def query(self,text):return dict(query=text,profile=profile,embedding=[1.,0.])
+    monkeypatch.setattr('serein.adapters.embedding.EmbeddingClient',Embedding)
+    monkeypatch.setattr('serein.recall.routing.route_query',lambda *a,**kw:{'route':'recall_needed','action':'recall'})
+    rank=RerankerClient('http://127.0.0.1/rerank','synthetic',api_key='',
+        tokenizer={'path':tokenizer_path,'max_tokens':512})
+    requests=[]
+    def server(client,url,**kwargs):
+        requests.append(kwargs['json'])
+        return httpx.Response(200,json={'results':[{'index':i,'relevance_score':.9}
+            for i,_ in enumerate(kwargs['json']['documents'])]})
+    monkeypatch.setattr(httpx.Client,'post',server)
+    result=Recall(settings,reranker=rank).run('手机维修',method='semantic',min_cosine=.5)
+    assert result['cards']==[] and result['selected_refs']==[]
+    assert 'PRIVATE' not in result['context']
+    assert requests==[]

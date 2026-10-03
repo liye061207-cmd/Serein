@@ -1,6 +1,6 @@
 from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer, ValidationError
 from ..deployment import read_settings, save_settings, TASKS, DEFAULT_FEATURES, DEFAULT_RESUME
 from typing import Literal
 from datetime import date
@@ -83,6 +83,13 @@ class ModelEntry(ModelConnection):
     tokenizer: TokenizerWindow | None = None
     query_instruction: str = Field(default='', max_length=1000)
     document_instruction: str = Field(default='', max_length=1000)
+
+    @model_serializer(mode='wrap')
+    def preserve_explicit_tokenizer_clear(self, handler):
+        value = handler(self)
+        if 'tokenizer' in self.model_fields_set and self.tokenizer is None:
+            value['tokenizer'] = None
+        return value
 
 
 class ModelRoute(BaseModel):

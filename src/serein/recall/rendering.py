@@ -77,6 +77,8 @@ def render(hits, *, reader=None, body_char_limit=1200, scope_arc_key='', deliver
             source = bucket_text_for_embedding({'content': source, 'metadata': {'memory_value_source': 'authored_scene', **doc['metadata']}})
         excerpt = hit.get('body_excerpt')
         if excerpt:
+            if not excerpt['text'].strip():
+                continue
             from .passages import regions
             spans = excerpt.get('source_spans') or [
                 {'start_offset':excerpt['start_offset'],'end_offset':excerpt['end_offset']}]
