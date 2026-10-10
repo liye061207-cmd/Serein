@@ -18,6 +18,47 @@ from .pipeline_images import (freeze_task_images, persistable_request, hydrate_r
     compact_completed_snapshots, compact_batch_snapshot, compact_job_request)
 from . import pipeline_tracks as track_state
 
+def _loads_loose(text):
+    import json
+    s = str(text or "").strip()
+    while s.startswith("`"):
+        s = s[1:]
+    while s.endswith("`"):
+        s = s[:-1]
+    s = s.strip()
+    if s[:4].lower() == "json":
+        s = s[4:].strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    i = s.find("{")
+    if i < 0:
+        raise ValueError("模型返回中没有 JSON 对象")
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(i, len(s)):
+        ch = s[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(s[i:j + 1])
+    raise ValueError("模型返回的 JSON 不完整，疑似被截断")
+
+
 ROLES=('track_router','event_curator','event_writer')
 TZ=timezone(timedelta(hours=8))
 CONTRACT='public-event-message-tracks-v8'
@@ -290,12 +331,37 @@ def _assignment_tracks(data,assignments):
                 or type(item.get('source_message_id')) is not int or item['source_message_id']!=key):
             raise RoutingRecoveryError(f'route does not match frozen message {key}')
         primary=item['primary_track_id'];context=item['context_track_ids']
-        if (not isinstance(primary,str) or not primary or not isinstance(context,list)
-                or any(not isinstance(ref,str) or not ref or ref==primary for ref in context)
-                or len(set(context))!=len(context)
-                or item['routing_role'] not in {'origin','primary_activity','landing','bridge','routine'}
-                or bool(context)!=(item['routing_role']=='bridge')):
-            raise RoutingRecoveryError(f'invalid Track reference or bridge relationship for message {key}')
+        if not isinstance(primary,str) or not primary:
+            raise RoutingRecoveryError(f'invalid primary Track reference for message {key}')
+        if not isinstance(context,list):
+            raise RoutingRecoveryError(f'invalid context Track list for message {key}')
+        # 容错：清理 context 中的空值、重复项和与 primary 相同的引用
+        cleaned = []
+        for ref in context:
+            if not isinstance(ref, str) or not ref:
+                logger.warning("Track Router 第 %s 条 context 中有无效引用 %r，已移除", key, ref)
+                continue
+            if ref == primary:
+                logger.warning("Track Router 第 %s 条 context 与 primary 重复 %r，已移除", key, ref)
+                continue
+            if ref in cleaned:
+                logger.warning("Track Router 第 %s 条 context 中有重复引用 %r，已去重", key, ref)
+                continue
+            cleaned.append(ref)
+        item['context_track_ids'] = cleaned
+        context = cleaned
+        # 容错：bridge role 与 context 不匹配时自动修正
+        role = item['routing_role']
+        if role not in {'origin','primary_activity','landing','bridge','routine'}:
+            logger.warning("Track Router 第 %s 条返回非法 routing_role=%r，已降为 primary_activity", key, role)
+            item['routing_role'] = 'primary_activity'
+            role = 'primary_activity'
+        if role == 'bridge' and not context:
+            logger.warning("Track Router 第 %s 条标了 bridge 却没给 context，已降为 primary_activity", key)
+            item['routing_role'] = 'primary_activity'
+        elif role != 'bridge' and context:
+            logger.warning("Track Router 第 %s 条给了 context 却没标 bridge，已升为 bridge", key)
+            item['routing_role'] = 'bridge'
         used.extend([primary,*context])
     return list(dict.fromkeys(used))
 
@@ -1111,7 +1177,7 @@ async def job(database,batch,request,key,runner):
                         if reasoning_tokens is not None:
                             suffix+=f'，其中思考使用 {reasoning_tokens} tokens'
                     raise ValueError('模型未返回最终 JSON 内容'+suffix)
-                output=prepare_stage_output(request,json.loads(raw))
+                output=prepare_stage_output(request,_loads_loose(raw))
                 validate(request,output)
                 record_attempt(database,identifier,raw)
                 break

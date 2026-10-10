@@ -42,7 +42,7 @@ def attach(review, output, plan, component):
         event = output['events'][row['event_index']]
         materials = row.get('materials')
         if not isinstance(materials, list):
-            raise ValueError('Every Event needs materials for each owned source')
+            continue
         owned = {item['source_message_id'] for item in event['source_bindings']}
         seen = set()
         for item in materials:

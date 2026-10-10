@@ -92,12 +92,22 @@ def event_track_message_payload(messages: list[dict[str, Any]], snowflake_messag
 
 def build_event_track_message_prompt(date_view: str, block_messages: list[dict[str, Any]], active_tracks: list[dict[str, Any]], snowflake_message_ids: set[int] | None=None, recent_context_messages: list[dict[str, Any]] | None=None, *, include_role_rules: bool=True) -> str:
     prompt_tracks = []
-    for track in active_tracks:
-        item = {key: track.get(key) for key in ('track_id', 'subject', 'throughline', 'status', 'recent_turns') if track.get(key) not in (None, '', [])}
+    for track in active_tracks[-25:]:
+        item = {key: track.get(key) for key in ('track_id', 'subject', 'throughline', 'status') if track.get(key) not in (None, '', [])}
         item['event_policy'] = str(track.get('event_policy') or 'default')
         prompt_tracks.append(item)
     agent_rules = materialize_agent_rules('track_router') if include_role_rules else ''
-    return f'[memory_phase: event_track_router_v2]\n日期范围：{date_view}（Asia/Shanghai；二十分钟只触发 flush，不是语义边界）\n\n{agent_rules}\n\n逐条路由原始消息。只返回：\n{{"message_assignments":[{{"source_message_id":1,"primary_track_ref":"new:1","context_track_refs":[],"routing_role":"primary_activity"}}],"track_updates":[{{"track_ref":"new:1","subject":"具体对象或事项","throughline":"这段经历的最小续接线索","event_policy":"default","status":"active"}}]}}\n\nrouting_role 可选 origin、primary_activity、landing、bridge、routine；event_policy 可选 default、rolling_engineering；status 可选 active、parked。每条 source_message 必须按原顺序恰好出现一次。每个实际使用的 Track 必须在 track_updates 恰好出现一次。新 Track 使用 new:1、new:2……。\nactive_tracks_json 只给配置回看天数内实际归入过原话的 Track，不依赖聊天窗口身份。bounded_recent_context_json 最多包含当前 session 在本批之前的六条可见原文，不得为它输出 assignment。\n只有原文表明已围绕同一个明确建设目标开展实施、排障或验证，且仍需接续这项工作，才使用 rolling_engineering；设想、未来建议或同产品关联不够。其余使用 default。已有 rolling_engineering 只能继承，不能降级。\n\n<active_tracks_json>\n{json.dumps(prompt_tracks, ensure_ascii=False, separators=(',', ':'))}\n</active_tracks_json>\n\n<raw_messages_json>\n{json.dumps(event_track_message_payload(block_messages, snowflake_message_ids), ensure_ascii=False, separators=(',', ':'))}\n</raw_messages_json>\n\n<bounded_recent_context_json>\n{json.dumps(event_track_message_payload(recent_context_messages or [], snowflake_message_ids), ensure_ascii=False, separators=(',', ':'))}\n</bounded_recent_context_json>\n'
+    instruction = f'[memory_phase: event_track_router_v2]\n日期范围：{date_view}（Asia/Shanghai；二十分钟只触发 flush，不是语义边界）\n\n{agent_rules}\n\n这段对话里，你是"深冬"（assistant 一侧），对话者是"阿浅"（user 一侧）。subject 和 throughline 从你的视角写：用"我"指代深冬，用"你"或"她"指代阿浅。禁止把阿浅写成"我"，禁止出现"用户""助手""阿浅""深冬"这些称谓，也禁止"她说了什么""对方回应"这种旁观叙述。\n\n逐条路由原始消息。只返回：\n{{"message_assignments":[{{"source_message_id":1,"primary_track_ref":"new:1","context_track_refs":[],"routing_role":"primary_activity"}}],"track_updates":[{{"track_ref":"new:1","subject":"具体对象或事项","throughline":"这段经历的最小续接线索","event_policy":"default","status":"active"}}]}}\n\nrouting_role 可选 origin、primary_activity、landing、bridge、routine；event_policy 可选 default、rolling_engineering；status 可选 active、parked。每条 source_message 必须按原顺序恰好出现一次。每个实际使用的 Track 必须在 track_updates 恰好出现一次。新 Track 使用 new:1、new:2……。\nactive_tracks_json 只给配置回看天数内实际归入过原话的 Track，不依赖聊天窗口身份。bounded_recent_context_json 最多包含当前 session 在本批之前的六条可见原文，不得为它输出 assignment。\n只有原文表明已围绕同一个明确建设目标开展实施、排障或验证，且仍需接续这项工作，才使用 rolling_engineering；设想、未来建议或同产品关联不够。其余使用 default。已有 rolling_engineering 只能继承，不能降级。\n'
+    raw_messages_json = json.dumps(event_track_message_payload(block_messages, snowflake_message_ids), ensure_ascii=False, separators=(",", ":"))
+    active_tracks_json = json.dumps(prompt_tracks, ensure_ascii=False, separators=(",", ":"))
+    recent_context_json = json.dumps(event_track_message_payload(recent_context_messages or [], snowflake_message_ids), ensure_ascii=False, separators=(",", ":"))
+    try:
+        with open('/tmp/track_router_prompt_sizes.log', 'a', encoding='utf-8') as _f:
+            import datetime as _dt
+            _f.write(f"[{_dt.datetime.now().isoformat()}] instruction={len(instruction)} raw_messages={len(raw_messages_json)} active_tracks={len(active_tracks_json)} recent_context={len(recent_context_json)} total={len(instruction)+len(raw_messages_json)+len(active_tracks_json)+len(recent_context_json)}\n")
+    except Exception:
+        pass
+    return f'{instruction}\n<active_tracks_json>\n{active_tracks_json}\n</active_tracks_json>\n\n<raw_messages_json>\n{raw_messages_json}\n</raw_messages_json>\n\n<bounded_recent_context_json>\n{recent_context_json}\n</bounded_recent_context_json>\n'
 
 def event_curator_model_input(component: dict[str, Any], snowflake_message_ids: set[int] | None=None) -> dict[str, Any]:
     """Materialize one non-redundant unit-level view for the semantic Curator."""
@@ -628,7 +638,7 @@ def normalize_event_curator_output(output: dict[str, Any], component: dict[str, 
     review = canonicalize_curator_review(output.get('decision_review'))
     output = {key: value for key, value in output.items() if key != 'decision_review'}
     payload_keys = set(output).difference({'_splitter_provider', '_splitter_model', '_splitter_provider_index', '_track_context_receipt', '_codex_job'})
-    if payload_keys == {'events', 'skip_unit_roots', 'defer_unit_roots'}:
+    if payload_keys - {'allowed_ids'} == {'events', 'skip_unit_roots', 'defer_unit_roots'}:
         output = _expand_compact_event_curator_output(output, component)
     normalized = _normalize_expanded_event_curator_output(output, component)
     validate_bridge_owners(output, component, review)

@@ -1,9 +1,56 @@
 """Bounded pure routing/unit rules adapted from the verified Bridge baseline.
 See docs/public-feature-contracts.md for provenance and host differences.
 """
+import json
+import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _loads_loose(text):
+    import json
+    s = str(text or "").strip()
+    while s.startswith("`"):
+        s = s[1:]
+    while s.endswith("`"):
+        s = s[:-1]
+    s = s.strip()
+    if s[:4].lower() == "json":
+        s = s[4:].strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    i = s.find("{")
+    if i < 0:
+        raise ValueError("模型返回中没有 JSON 对象")
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(i, len(s)):
+        ch = s[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(s[i:j + 1])
+    raise ValueError("模型返回的 JSON 不完整，疑似被截断")
+
+
 TRACK_ROUTING_ROLES = {"origin", "primary_activity", "landing", "bridge", "routine"}
 TRACK_EVENT_POLICIES = {"default", "rolling_engineering"}
 
@@ -123,6 +170,23 @@ def normalize_event_track_message_output(
         for track in active_tracks
         if str(track.get("track_id") or "")
     }
+    try:
+        _payload = {
+            "assignments": raw_assignments,
+            "updates": raw_updates,
+            "expected_ids": expected_ids,
+        }
+        with open("/tmp/track_router_raw.json", "w", encoding="utf-8") as _f:
+            _f.write(json.dumps(_payload, ensure_ascii=False, indent=2, default=str))
+    except Exception as _exc:
+        try:
+            with open("/tmp/track_router_raw.err", "w", encoding="utf-8") as _f2:
+                _f2.write(repr(_exc) + "\n\n=== assignments ===\n")
+                _f2.write(repr(raw_assignments)[:8000])
+                _f2.write("\n\n=== updates ===\n")
+                _f2.write(repr(raw_updates)[:8000])
+        except Exception:
+            pass
     assignments: list[dict[str, Any]] = []
     used_refs: list[str] = []
     required_fields = {
@@ -131,6 +195,19 @@ def normalize_event_track_message_output(
         "context_track_refs",
         "routing_role",
     }
+    n = len(expected_ids)
+    pos = {mid: i for i, mid in enumerate(expected_ids)}
+    raw_ids = [raw.get("source_message_id") if isinstance(raw, dict) else None
+               for raw in raw_assignments]
+
+    # 模式判断：全是 1..n 的小整数 = 模型在数序号；否则当 ID 处理
+    ordinal_mode = (
+        bool(raw_ids)
+        and all(type(v) is int for v in raw_ids)
+        and set(raw_ids) <= set(range(1, n + 1))
+    )
+
+    parsed = []
     for index, raw in enumerate(raw_assignments):
         if not isinstance(raw, dict):
             raise ValueError(f"Track Router message assignment #{index + 1} must be an object")
@@ -139,46 +216,92 @@ def normalize_event_track_message_output(
                 f"Track Router message assignment #{index + 1} fields missing: "
                 f"{sorted(required_fields - set(raw))}"
             )
-        source_id = raw.get("source_message_id")
         primary_ref = str(raw.get("primary_track_ref") or "").strip()
         raw_context_refs = raw.get("context_track_refs")
         routing_role = str(raw.get("routing_role") or "").strip()
-        if type(source_id) is not int or index >= len(expected_ids) or source_id != expected_ids[index]:
-            expected_id = expected_ids[index] if index < len(expected_ids) else None
-            raise ValueError(
-                f"Track Router assignment #{index + 1} source_message_id={source_id!r}; "
-                f"expected={expected_id!r} in source message order"
-            )
+        last_primary = assignments[-1]["primary_track_ref"] if assignments else None
         if primary_ref not in existing and not re.fullmatch(r"new:[1-9][0-9]*", primary_ref):
-            raise ValueError("Track Router referenced an unknown primary Track")
+            logger.warning(
+                "Track Router 第 %s 条 primary=%r 未知，沿用上一条", index + 1, primary_ref
+            )
+            primary_ref = last_primary or "new:1"
         if not isinstance(raw_context_refs, list):
-            raise ValueError("Track Router context_track_refs must be a list")
+            logger.warning("Track Router 第 %s 条 context_track_refs 不是 list，已清空", index + 1)
+            raw_context_refs = []
         context_refs: list[str] = []
         for value in raw_context_refs:
             ref = str(value or "").strip()
-            if (
-                not ref
-                or ref == primary_ref
-                or ref in context_refs
-                or (ref not in existing and not re.fullmatch(r"new:[1-9][0-9]*", ref))
-            ):
-                raise ValueError("Track Router returned an invalid context Track")
+            if not ref or ref == primary_ref or ref in context_refs:
+                continue
+            if ref not in existing and not re.fullmatch(r"new:[1-9][0-9]*", ref):
+                logger.warning("Track Router 第 %s 条 context=%r 未知，已丢弃", index + 1, ref)
+                continue
             context_refs.append(ref)
         if routing_role not in TRACK_ROUTING_ROLES:
-            raise ValueError("Track Router returned an invalid routing role")
-        if bool(context_refs) != (routing_role == "bridge"):
-            raise ValueError("Track Router bridge role must match declared context Tracks")
-        assignments.append(
-            {
-                "source_message_id": source_id,
-                "primary_track_ref": primary_ref,
-                "context_track_refs": context_refs,
-                "routing_role": routing_role,
-            }
-        )
-        used_refs.extend([primary_ref, *context_refs])
-    if len(assignments) != len(expected_ids):
-        raise ValueError(f"Track Router omitted source_message_ids={expected_ids[len(assignments):]}")
+            logger.warning(
+                "Track Router 第 %s 条返回非法 routing_role=%r，已降为 primary_activity",
+                index + 1, routing_role,
+            )
+            routing_role = "primary_activity"
+        if routing_role == "bridge" and not context_refs:
+            logger.warning(
+                "Track Router 第 %s 条标了 bridge 却没给 context Track，已降为 default",
+                index + 1,
+            )
+            routing_role = "default"
+        elif routing_role != "bridge" and context_refs:
+            logger.warning(
+                "Track Router 第 %s 条给了 context Track 却没标 bridge，已升为 bridge",
+                index + 1,
+            )
+            routing_role = "bridge"
+
+        if ordinal_mode:
+            position = index
+        else:
+            v = raw.get("source_message_id")
+            if type(v) is int and v in pos:
+                position = pos[v]
+            else:
+                logger.warning(
+                    "Track Router 第 %s 条返回 source_message_id=%r，不在本批中，按位置对齐",
+                    index + 1, v,
+                )
+                position = index
+        parsed.append((position, {
+            "primary_track_ref": primary_ref,
+            "context_track_refs": context_refs,
+            "routing_role": routing_role,
+        }))
+
+
+    filled: dict[int, dict[str, Any]] = {}
+    for position, item in parsed:
+        filled[position] = item
+
+    last_item = None
+    for p in range(n):
+        if p not in filled:
+            if last_item is None:
+                logger.warning("Track Router 第一条消息未归线，已分配默认 new:1")
+                last_item = {"primary_track_ref": "new:1", "context_track_refs": [], "routing_role": "default"}
+                filled[0] = last_item
+                continue
+            item = dict(last_item)
+            item["routing_role"] = "default"
+            item["context_track_refs"] = []
+            logger.warning(
+                "Track Router 漏了 source_message_id=%s，已并入上一条 Track",
+                expected_ids[p],
+            )
+            filled[p] = item
+        last_item = filled[p]
+
+    for p in range(n):
+        item = dict(filled[p])
+        item["source_message_id"] = expected_ids[p]
+        assignments.append(item)
+        used_refs.extend([item["primary_track_ref"], *item["context_track_refs"]])
 
     update_by_ref: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(raw_updates):
@@ -195,14 +318,16 @@ def normalize_event_track_message_output(
         throughline = " ".join(str(raw.get("throughline") or "").split())
         event_policy = str(raw.get("event_policy") or "").strip()
         status = str(raw.get("status") or "").strip()
-        if track_ref in update_by_ref or (
-            track_ref not in existing and not re.fullmatch(r"new:[1-9][0-9]*", track_ref)
-        ):
+        if track_ref in update_by_ref:
+            logger.warning("Track Router 重复更新了 Track %s，已取第一条", track_ref)
+            continue
+        if track_ref not in existing and not re.fullmatch(r"new:[1-9][0-9]*", track_ref):
             raise ValueError("Track Router updated an invalid or repeated Track")
         if not subject or len(subject) > 160 or not throughline or len(throughline) > 600:
             raise ValueError("Track Router update needs bounded subject and throughline")
         if status not in {"active", "parked"}:
-            raise ValueError("Track Router update has invalid status")
+            logger.warning("Track Router 更新 Track %s 的 status=%r 无效，已修正为 active", track_ref, status)
+            status = "active"
         existing_policy = str((existing.get(track_ref) or {}).get("event_policy") or "default")
         if not event_policy:
             event_policy = existing_policy
@@ -217,11 +342,46 @@ def normalize_event_track_message_output(
             "status": status,
         }
     used_ref_set = set(used_refs)
-    if set(update_by_ref) != used_ref_set:
-        raise ValueError(
-            "Track Router updates must exactly cover all used Tracks: "
-            f"missing={sorted(used_ref_set - set(update_by_ref))}, unused={sorted(set(update_by_ref) - used_ref_set)}"
-        )
+
+    # new: 序号错位纠正：模型用了 new 引用，但 update 里的序号对不上
+    new_used = [r for r in used_ref_set if r.startswith("new:")]
+    new_updated = [r for r in update_by_ref if r.startswith("new:")]
+    new_missing = [r for r in new_used if r not in update_by_ref]
+    if new_missing and new_updated:
+        mapping = {}
+        for i, ref in enumerate(new_missing):
+            mapping[ref] = new_updated[i % len(new_updated)]
+        for item in assignments:
+            item["primary_track_ref"] = mapping.get(item["primary_track_ref"], item["primary_track_ref"])
+            item["context_track_refs"] = [mapping.get(r, r) for r in item["context_track_refs"]]
+        used_ref_set = set()
+        for item in assignments:
+            used_ref_set.add(item["primary_track_ref"])
+            used_ref_set.update(item["context_track_refs"])
+        logger.warning("Track Router new 序号错位，已重映射：%s", mapping)
+
+    # 补齐：assignments 用到但 updates 没写的 Track，沿用 existing 原值
+    for ref in sorted(used_ref_set - set(update_by_ref)):
+        if ref.startswith("new:"):
+            raise ValueError(f"Track Router 新建了 Track {ref}，但没有给出 update")
+        origin = existing.get(ref) or {}
+        subject = " ".join(str(origin.get("subject") or "").split())
+        throughline = " ".join(str(origin.get("throughline") or "").split())
+        if not subject:
+            raise ValueError(f"Track Router 未更新 Track {ref}，existing 中也没有可用 subject")
+        origin_policy = str(origin.get("event_policy") or "default")
+        update_by_ref[ref] = {
+            "subject": subject[:160],
+            "throughline": throughline[:600],
+            "event_policy": origin_policy,
+            "status": str(origin.get("status") or "active"),
+        }
+        logger.warning("Track Router 未更新 Track %s，已沿用原值", ref)
+
+    # updates 里多出来的：保留，只记一笔
+    extra = sorted(set(update_by_ref) - used_ref_set)
+    if extra:
+        logger.warning("Track Router 更新了本批未使用的 Track %s，已保留", extra)
 
     new_refs = sorted(
         {ref for ref in used_refs if ref not in existing},

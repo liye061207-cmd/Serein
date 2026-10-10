@@ -87,6 +87,11 @@ def raw_event_text_looks_injected(text: str, raw: dict[str, Any] | None = None) 
         return True
     if INJECTION_SECTION_RE.search(stripped):
         return True
+    if "<environment>" in stripped or "<serein_live_context>" in stripped:
+        rest = re.sub(r"<environment>.*?</environment>", "", stripped, flags=re.S)
+        rest = re.sub(r"<serein_live_context>.*?</serein_live_context>", "", rest, flags=re.S)
+        if len(rest.strip()) < 10:
+            return True
     return "[bucket_id:" in stripped and any(
         marker in stripped
         for marker in (

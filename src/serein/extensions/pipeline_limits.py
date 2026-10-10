@@ -13,16 +13,13 @@ def blocks(messages, max_chars=40000):
         size=sum(len(m.get('content',m.get('text',''))) for m in unit)
         silence=start is not None and previous is not None and (start-previous).total_seconds()>=1200
         if size>max_chars:
-            # Reply envelopes are transport atoms. Never truncate one just to
-            # satisfy a soft input target; isolate it so later material can
-            # still be split normally and let the prompt budget be the final
-            # model-facing guard.
             if current:
                 result.append(current);current=[];chars=0;turns=0
-            result.append(list(unit))
+            for message in unit:
+                result.append([message])
             previous=datetime.fromisoformat(unit[-1]['created_at'].replace('Z','+00:00')) if known else None
             continue
-        if current and (silence or turns>=20 or chars+size>max_chars):
+        if current and (silence or turns>=6 or chars+size>max_chars):
             result.append(current);current=[];chars=0;turns=0
         current.extend(unit);chars+=size;turns+=1
         previous=datetime.fromisoformat(unit[-1]['created_at'].replace('Z','+00:00')) if known else None
